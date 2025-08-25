@@ -1,13 +1,149 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import itertools
+from torchvision import models
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
 
 
+class ContentLoss(nn.Module):
+    """Content Loss using VGG features"""
+    
+    def __init__(self, device='cpu'):
+        super(ContentLoss, self).__init__()
+        # Load pre-trained VGG19 and use features up to conv4_4 (before ReLU)
+        vgg = models.vgg19(pretrained=True).features
+        self.feature_extractor = nn.Sequential()
+        
+        # We'll use layers up to conv4_4 (layer 25 in VGG19 features)
+        for i, layer in enumerate(vgg[:26]):  # Up to conv4_4
+            self.feature_extractor.add_module(str(i), layer)
+        
+        # Freeze the feature extractor
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+            
+        self.feature_extractor.to(device)
+        self.criterion = nn.MSELoss()
+        
+    def forward(self, input_img, target_img):
+        """Compute content loss between input and target images"""
+        # Normalize images to [0,1] range if they're in [-1,1] range
+        if input_img.min() < 0:
+            input_img = (input_img + 1) / 2
+        if target_img.min() < 0:
+            target_img = (target_img + 1) / 2
+            
+        # Extract features
+        input_features = self.feature_extractor(input_img)
+        target_features = self.feature_extractor(target_img)
+        
+        # Compute MSE loss between features
+        return self.criterion(input_features, target_features)
+
+
+class HueLoss(nn.Module):
+    """Hue Loss to preserve color hue during image translation"""
+    
+    def __init__(self, loss_type='l1'):
+        super(HueLoss, self).__init__()
+        self.loss_type = loss_type
+        if loss_type == 'l1':
+            self.criterion = nn.L1Loss()
+        elif loss_type == 'l2':
+            self.criterion = nn.MSELoss()
+        else:
+            raise ValueError("loss_type must be 'l1' or 'l2'")
+    
+    def rgb_to_hsv(self, rgb):
+        """Convert RGB to HSV color space"""
+        # Ensure input is in [0, 1] range
+        if rgb.min() < 0:
+            rgb = (rgb + 1) / 2
+        
+        rgb = torch.clamp(rgb, 0, 1)
+        
+        # RGB to HSV conversion
+        r, g, b = rgb[:, 0:1, :, :], rgb[:, 1:2, :, :], rgb[:, 2:3, :, :]
+        
+        max_rgb, argmax_rgb = torch.max(rgb, dim=1, keepdim=True)
+        min_rgb, _ = torch.min(rgb, dim=1, keepdim=True)
+        
+        delta = max_rgb - min_rgb
+        
+        # Saturation
+        s = torch.where(max_rgb > 0, delta / max_rgb, torch.zeros_like(max_rgb))
+        
+        # Value
+        v = max_rgb
+        
+        # Hue calculation
+        h = torch.zeros_like(max_rgb)
+        
+        # Red is max
+        idx_r = (argmax_rgb == 0) & (delta > 0)
+        h[idx_r] = (60 * ((g[idx_r] - b[idx_r]) / delta[idx_r]) + 360) % 360
+        
+        # Green is max
+        idx_g = (argmax_rgb == 1) & (delta > 0)
+        h[idx_g] = (60 * ((b[idx_g] - r[idx_g]) / delta[idx_g]) + 120) % 360
+        
+        # Blue is max
+        idx_b = (argmax_rgb == 2) & (delta > 0)
+        h[idx_b] = (60 * ((r[idx_b] - g[idx_b]) / delta[idx_b]) + 240) % 360
+        
+        # Normalize hue to [0, 1]
+        h = h / 360.0
+        
+        return h, s, v
+    
+    def circular_distance(self, h1, h2):
+        """Compute circular distance between two hue values"""
+        # Both h1 and h2 should be in [0, 1] range
+        diff = torch.abs(h1 - h2)
+        # Handle circular nature of hue
+        circular_diff = torch.min(diff, 1.0 - diff)
+        return circular_diff
+    
+    def forward(self, input_img, target_img, saturation_threshold=0.1):
+        """
+        Compute hue loss between input and target images
+        
+        Args:
+            input_img: Generated image
+            target_img: Target image  
+            saturation_threshold: Minimum saturation to consider for hue loss
+        """
+        # Convert to HSV
+        h_input, s_input, v_input = self.rgb_to_hsv(input_img)
+        h_target, s_target, v_target = self.rgb_to_hsv(target_img)
+        
+        # Create mask for pixels with sufficient saturation
+        # Only compute hue loss for colored pixels (not grayscale)
+        sat_mask = ((s_input > saturation_threshold) | (s_target > saturation_threshold)).float()
+        
+        if sat_mask.sum() == 0:
+            # If no colored pixels, return zero loss
+            return torch.tensor(0.0, device=input_img.device, requires_grad=True)
+        
+        # Compute circular hue distance
+        hue_diff = self.circular_distance(h_input, h_target)
+        
+        # Apply saturation mask and compute weighted loss
+        masked_hue_diff = hue_diff * sat_mask
+        
+        # Compute mean loss only over valid pixels
+        hue_loss = masked_hue_diff.sum() / (sat_mask.sum() + 1e-8)
+        
+        return hue_loss
+
+
 class CycleGANModel(BaseModel):
     """
-    This class implements the CycleGAN model, for learning image-to-image translation without paired data.
+    This class implements the CycleGAN model with Content Loss and Hue Loss, 
+    for learning image-to-image translation without paired data.
 
     The model training requires '--dataset_mode unaligned' dataset.
     By default, it uses a '--netG resnet_9blocks' ResNet generator,
@@ -28,13 +164,15 @@ class CycleGANModel(BaseModel):
         Returns:
             the modified parser.
 
-        For CycleGAN, in addition to GAN losses, we introduce lambda_A, lambda_B, and lambda_identity for the following losses.
+        For CycleGAN, in addition to GAN losses, we introduce lambda_A, lambda_B, lambda_identity, lambda_content, and lambda_hue for the following losses.
         A (source domain), B (target domain).
         Generators: G_A: A -> B; G_B: B -> A.
         Discriminators: D_A: G_A(A) vs. B; D_B: G_B(B) vs. A.
         Forward cycle loss:  lambda_A * ||G_B(G_A(A)) - A|| (Eqn. (2) in the paper)
         Backward cycle loss: lambda_B * ||G_A(G_B(B)) - B|| (Eqn. (2) in the paper)
         Identity loss (optional): lambda_identity * (||G_A(B) - B|| * lambda_B + ||G_B(A) - A|| * lambda_A) (Sec 5.2 "Photo generation from paintings" in the paper)
+        Content loss: lambda_content * (||VGG(G_A(A)) - VGG(B)|| + ||VGG(G_B(B)) - VGG(A)||)
+        Hue loss: lambda_hue * (||H(G_A(A)) - H(A)|| + ||H(G_B(B)) - H(B)||) where H extracts hue channel
         Dropout is not used in the original CycleGAN paper.
         """
         parser.set_defaults(no_dropout=True)  # default CycleGAN did not use dropout
@@ -47,6 +185,25 @@ class CycleGANModel(BaseModel):
                 default=0.5,
                 help="use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1",
             )
+            parser.add_argument(
+                "--lambda_content",
+                type=float,
+                default=0.5,
+                help="weight for content loss using VGG features. This helps preserve semantic content during translation.",
+            )
+            parser.add_argument(
+                "--lambda_hue",
+                type=float,
+                default=0.0,
+                help="weight for hue preservation loss. This helps maintain color hue consistency during translation.",
+            )
+            parser.add_argument(
+                "--hue_loss_type",
+                type=str,
+                default="l1",
+                choices=["l1", "l2"],
+                help="type of loss function for hue loss computation",
+            )
 
         return parser
 
@@ -58,7 +215,7 @@ class CycleGANModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "D_B", "G_B", "cycle_B", "idt_B"]
+        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "content_A", "hue_A", "D_B", "G_B", "cycle_B", "idt_B", "content_B", "hue_B"]
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ["real_A", "fake_B", "rec_A"]
         visual_names_B = ["real_B", "fake_A", "rec_B"]
@@ -92,6 +249,8 @@ class CycleGANModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            self.criterionContent = ContentLoss(self.device)  # define content loss using VGG features
+            self.criterionHue = HueLoss(getattr(opt, 'hue_loss_type', 'l1'))  # define hue preservation loss
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -155,6 +314,9 @@ class CycleGANModel(BaseModel):
         lambda_idt = self.opt.lambda_identity
         lambda_A = self.opt.lambda_A
         lambda_B = self.opt.lambda_B
+        lambda_content = self.opt.lambda_content
+        lambda_hue = getattr(self.opt, 'lambda_hue', 1.0)
+        
         # Identity loss
         if lambda_idt > 0:
             # G_A should be identity if real_B is fed: ||G_A(B) - B||
@@ -175,8 +337,31 @@ class CycleGANModel(BaseModel):
         self.loss_cycle_A = self.criterionCycle(self.rec_A, self.real_A) * lambda_A
         # Backward cycle loss || G_A(G_B(B)) - B||
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
+        
+        # Content loss - preserve semantic content using VGG features
+        if lambda_content > 0:
+            # Content loss for A->B translation: VGG features of fake_B should be similar to real_B
+            self.loss_content_A = self.criterionContent(self.fake_B, self.real_B) * lambda_content
+            # Content loss for B->A translation: VGG features of fake_A should be similar to real_A  
+            self.loss_content_B = self.criterionContent(self.fake_A, self.real_A) * lambda_content
+        else:
+            self.loss_content_A = 0
+            self.loss_content_B = 0
+        
+        # Hue loss - preserve color hue during translation
+        if lambda_hue > 0:
+            # Hue loss for A->B translation: preserve hue from real_A in fake_B
+            self.loss_hue_A = self.criterionHue(self.fake_B, self.real_A) * lambda_hue
+            # Hue loss for B->A translation: preserve hue from real_B in fake_A
+            self.loss_hue_B = self.criterionHue(self.fake_A, self.real_B) * lambda_hue
+        else:
+            self.loss_hue_A = 0
+            self.loss_hue_B = 0
+        
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        self.loss_G = (self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + 
+                      self.loss_idt_A + self.loss_idt_B + self.loss_content_A + self.loss_content_B +
+                      self.loss_hue_A + self.loss_hue_B)
         self.loss_G.backward()
 
     def optimize_parameters(self):
