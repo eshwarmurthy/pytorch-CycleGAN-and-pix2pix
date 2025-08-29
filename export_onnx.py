@@ -95,12 +95,12 @@ if __name__ == "__main__":
     opt.serial_batches = True  # disable data shuffling; comment this line if results on randomly chosen images are needed.
     opt.no_flip = True  # no flip; comment this line if results on flipped images are needed.
     
-    dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
+    # dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     model = create_model(opt)  # create a model given opt.model and other options
     model.setup(opt)  # regular setup: load and print networks; create schedulers
 
     # Export the generator model to ONNX
-    onnx_path = "netG_A_dynamic.onnx"
+    onnx_path = "netG_A_dynamic_res_2_blocks.onnx"
     export_g_to_onnx(model.netG_A, onnx_path)
 
     # Validate the exported ONNX model

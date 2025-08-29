@@ -194,7 +194,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument(
                 "--lambda_hue",
                 type=float,
-                default=0.0,
+                default=0.5,
                 help="weight for hue preservation loss. This helps maintain color hue consistency during translation.",
             )
             parser.add_argument(
