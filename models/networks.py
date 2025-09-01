@@ -153,6 +153,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "resnet_2blocks":
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=2)
+    elif netG == "ResMobile_hybrid":
+        net = Resnet_Mobilenet_Hybrid_Generator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=4)
     elif netG == "unet_128":
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
@@ -351,7 +353,23 @@ class ResnetGenerator(nn.Module):
 
         for i in range(n_downsampling):  # add upsampling layers
             mult = 2 ** (n_downsampling - i)
-            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1, bias=use_bias), norm_layer(int(ngf * mult / 2)), nn.ReLU(True)]
+            model += [
+                # 1. Upsample the image
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                
+                # 2. Apply a standard convolution
+                nn.Conv2d(
+                    ngf * mult, 
+                    int(ngf * mult / 2), 
+                    kernel_size=3, 
+                    stride=1, # Stride is now 1
+                    padding=1, # Padding keeps the size the same
+                    bias=use_bias
+                ),
+                
+                # 3. Normalization and Activation
+                norm_layer(int(ngf * mult / 2)), 
+                nn.ReLU(True)]
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
         model += [nn.Tanh()]
@@ -363,6 +381,92 @@ class ResnetGenerator(nn.Module):
         return self.model(input)
 
 
+class Resnet_Mobilenet_Hybrid_Generator(nn.Module):
+    """Resnet-based generator that consists of Resnet blocks between a few downsampling/upsampling operations.
+
+    We adapt Torch code and idea from Justin Johnson's neural style transfer project(https://github.com/jcjohnson/fast-neural-style)
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type="reflect"):
+        """Construct a Resnet-based generator
+
+        Parameters:
+            input_nc (int)      -- the number of channels in input images
+            output_nc (int)     -- the number of channels in output images
+            ngf (int)           -- the number of filters in the last conv layer
+            norm_layer          -- normalization layer
+            use_dropout (bool)  -- if use dropout layers
+            n_blocks (int)      -- the number of ResNet blocks
+            padding_type (str)  -- the name of padding layer in conv layers: reflect | replicate | zero
+        """
+        assert n_blocks >= 0
+        super(Resnet_Mobilenet_Hybrid_Generator, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias), norm_layer(ngf), nn.ReLU(True)]
+
+        n_downsampling = 2
+        
+        # --- REPLACEMENT CODE ---
+        in_channels = ngf
+        # The first layer can still be a regular conv
+        # model += [nn.Conv2d(input_nc, in_channels, ...)] 
+
+        for i in range(n_downsampling):  # add downsampling layers
+            out_channels = in_channels * 2
+            # Replace the Conv2d with our new efficient block
+            model += [InvertedResidual(in_channels, out_channels, stride=2)]
+            in_channels = out_channels
+
+        for i in range(n_blocks):  # add MobileNetV2 blocks
+            # Replace the ResnetBlock with our new efficient block
+            model += [InvertedResidual(in_channels, in_channels, stride=1)]
+
+        # The upsampling part can remain the same (Upsample + Conv is good practice)
+        # But for maximum efficiency, you could use a regular Conv2d here too.
+        for i in range(n_downsampling):  # add upsampling layers
+            out_channels = in_channels // 2
+            model += [
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=use_bias),
+                norm_layer(out_channels), 
+                nn.ReLU(True)
+            ]
+            in_channels = out_channels
+        
+        # for i in range(n_downsampling):  # add upsampling layers
+        #     mult = 2 ** (n_downsampling - i)
+        #     model += [
+        #         # 1. Upsample the image
+        #         nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                
+        #         # 2. Apply a standard convolution
+        #         nn.Conv2d(
+        #             ngf * mult, 
+        #             int(ngf * mult / 2), 
+        #             kernel_size=3, 
+        #             stride=1, # Stride is now 1
+        #             padding=1, # Padding keeps the size the same
+        #             bias=use_bias
+        #         ),
+                
+        #         # 3. Normalization and Activation
+        #         norm_layer(int(ngf * mult / 2)), 
+        #         nn.ReLU(True)]
+        model += [nn.ReflectionPad2d(3)]
+        model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model += [nn.Tanh()]
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, input):
+        """Standard forward"""
+        return self.model(input)
+    
+    
 class ResnetBlock(nn.Module):
     """Define a Resnet block"""
 
@@ -421,7 +525,46 @@ class ResnetBlock(nn.Module):
         """Forward function (with skip connections)"""
         out = x + self.conv_block(x)  # add skip connections
         return out
+    
+    
+class InvertedResidual(nn.Module):
+    """
+    The core building block of MobileNetV2.
+    It replaces a standard ResNet block.
+    """
+    def __init__(self, in_channels, out_channels, stride, expand_ratio=6):
+        super(InvertedResidual, self).__init__()
+        self.stride = stride
+        assert stride in [1, 2]
 
+        hidden_dim = int(round(in_channels * expand_ratio))
+        self.use_res_connect = self.stride == 1 and in_channels == out_channels
+
+        layers = []
+        # 1. Expansion phase (Pointwise convolution)
+        if expand_ratio != 1:
+            layers.append(nn.Conv2d(in_channels, hidden_dim, kernel_size=1, stride=1, padding=0, bias=False))
+            layers.append(nn.BatchNorm2d(hidden_dim))
+            layers.append(nn.ReLU6(inplace=True))
+        
+        # 2. Filtering phase (Depthwise convolution)
+        layers.extend([
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=stride, padding=1, groups=hidden_dim, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU6(inplace=True),
+        ])
+
+        # 3. Projection phase (Pointwise convolution)
+        layers.append(nn.Conv2d(hidden_dim, out_channels, kernel_size=1, stride=1, padding=0, bias=False))
+        layers.append(nn.BatchNorm2d(out_channels))
+
+        self.conv = nn.Sequential(*layers)
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
 
 class UnetGenerator(nn.Module):
     """Create a Unet-based generator"""

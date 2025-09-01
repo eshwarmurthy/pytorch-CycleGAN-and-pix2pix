@@ -569,7 +569,7 @@ def main():
     """
     Main function to process training log and generate visualization
     """
-    log_file = "/home/as76usr/sigtuple/Eshwar/Garuda-model-dev/AS76/ISP/Defocus-Deblur/pytorch-CycleGAN-and-pix2pix/checkpoints/resnet_2_blocks/loss_log.txt"
+    log_file = "/home/as76usr/sigtuple/Eshwar/Garuda-model-dev/AS76/ISP/Defocus-Deblur/pytorch-CycleGAN-and-pix2pix/checkpoints/res_mobile_hybrid/loss_log.txt"
     
     # Check if file exists
     if not os.path.exists(log_file):
