@@ -100,7 +100,7 @@ if __name__ == "__main__":
     model.setup(opt)  # regular setup: load and print networks; create schedulers
 
     # Export the generator model to ONNX
-    onnx_path = "netG_A_dynamic_res_2_blocks.onnx"
+    onnx_path = "/imgarc/nila/data/Deblur_Defocus/Models/netG_A_dynamic_v7.onnx"
     export_g_to_onnx(model.netG_A, onnx_path)
 
     # Validate the exported ONNX model

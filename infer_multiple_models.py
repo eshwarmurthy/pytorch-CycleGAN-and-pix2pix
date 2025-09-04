@@ -126,9 +126,9 @@ def create_comparison_image(orig_img, model_outputs, model_names, clean_img=None
         images_to_stack.append(add_text_label(clean_resized, "Ground Truth"))
     
     # Stack horizontally
-    comparison_5 = np.hstack(images_to_stack[:5])
-    comparison_10 = np.hstack(images_to_stack[5:])
-    comparison = np.vstack((comparison_5, comparison_10))
+    comparison_6 = np.hstack(images_to_stack[:6])
+    comparison_12 = np.hstack(images_to_stack[6:])
+    comparison = np.vstack((comparison_6, comparison_12))
     return comparison
 
 def reinhard_color_transfer(source, target):
@@ -192,7 +192,7 @@ def reinhard_color_transfer(source, target):
 def main():
     clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/clean'
     test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/sr_1'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models'
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v2_to_v9'
     model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/*.onnx"))
     
     # Create output directory if it doesn't exist

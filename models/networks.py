@@ -128,7 +128,6 @@ def init_net(net, init_type="normal", init_gain=0.02):
     init_weights(net, init_type, init_gain=init_gain)
     return net
 
-
 def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, init_type="normal", init_gain=0.02):
     """Create a generator
 
@@ -159,8 +158,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == 'resnet_efficient':
+        net = EfficientResnetGenerator(input_nc, output_nc, ngf=32, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     else:
-        raise NotImplementedError("Generator model name [%s] is not recognized" % netG)
+        raise NotImplementedError(f"Generator model name [{netG}] is not recognized")
     return net
 
 
@@ -203,9 +204,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     elif netD == "pixel":  # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     else:
-        raise NotImplementedError("Discriminator model name [%s] is not recognized" % netD)
+        raise NotImplementedError(f"Discriminator model name [{netD}] is not recognized")
     return net
-
 
 ##############################################################################
 # Classes
@@ -565,6 +565,153 @@ class InvertedResidual(nn.Module):
             return x + self.conv(x)
         else:
             return self.conv(x)
+
+class EfficientResnetBlock(nn.Module):
+    """Define a Resnet block with depthwise separable convolutions for efficiency."""
+
+    def __init__(self, dim, padding_type, norm_layer, use_dropout, use_bias):
+        """Initialize the Efficient Resnet block
+        
+        A resnet block is a conv block with skip connections.
+        This version uses depthwise separable convolutions to reduce parameters and computation.
+        """
+        super(EfficientResnetBlock, self).__init__()
+        self.conv_block = self.build_conv_block(dim, padding_type, norm_layer, use_dropout, use_bias)
+
+    def build_conv_block(self, dim, padding_type, norm_layer, use_dropout, use_bias):
+        """Construct a convolutional block using depthwise separable convolutions."""
+        conv_block = []
+        p = 0
+        if padding_type == 'reflect':
+            conv_block += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            conv_block += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+
+        # First depthwise separable convolution
+        conv_block += [
+            # Depthwise convolution
+            nn.Conv2d(dim, dim, kernel_size=3, padding=p, groups=dim, bias=use_bias),
+            # Pointwise convolution
+            nn.Conv2d(dim, dim, kernel_size=1, padding=0, bias=use_bias),
+            norm_layer(dim),
+            nn.ReLU(True)
+        ]
+        
+        if use_dropout:
+            conv_block += [nn.Dropout(0.5)]
+
+        p = 0
+        if padding_type == 'reflect':
+            conv_block += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            conv_block += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+
+        # Second depthwise separable convolution
+        conv_block += [
+            # Depthwise convolution
+            nn.Conv2d(dim, dim, kernel_size=3, padding=p, groups=dim, bias=use_bias),
+            # Pointwise convolution
+            nn.Conv2d(dim, dim, kernel_size=1, padding=0, bias=use_bias),
+            norm_layer(dim)
+        ]
+
+        return nn.Sequential(*conv_block)
+
+    def forward(self, x):
+        """Forward function (with skip connections)"""
+        out = x + self.conv_block(x)  # add skip connections
+        return out
+    
+
+
+class EfficientResnetGenerator(nn.Module):
+    """
+    Resnet-based generator that uses EfficientResnetBlocks for faster inference.
+    """
+
+    def __init__(self, input_nc, output_nc, ngf=32, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type="reflect"):
+        """Construct a Resnet-based generator
+        Parameters:
+            ngf (int)           -- the number of filters. A smaller value like 32 is recommended for efficiency.
+            n_blocks (int)      -- the number of EfficientResNet blocks.
+        """
+        assert n_blocks >= 0
+        super(EfficientResnetGenerator, self).__init__()
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        # Initial convolution block
+        # Option 1
+        '''model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(ngf),
+                 nn.ReLU(True)]'''
+
+        # Option 2
+        model = [nn.ReflectionPad2d(1),
+        nn.Conv2d(input_nc, ngf // 2, kernel_size=3, padding=0, bias=use_bias),
+        norm_layer(ngf // 2),
+        nn.ReLU(True),
+        nn.ReflectionPad2d(1),
+        nn.Conv2d(ngf // 2, ngf, kernel_size=3, padding=0, bias=use_bias),
+        norm_layer(ngf),
+        nn.ReLU(True)]
+
+        # Downsampling layers
+        n_downsampling = 2
+        for i in range(n_downsampling):
+            mult = 2**i
+            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias),
+                      norm_layer(ngf * mult * 2),
+                      nn.ReLU(True)]
+
+        # Efficient Residual blocks
+        mult = 2**n_downsampling
+        for i in range(n_blocks):
+            # *** This is the key change ***
+            model += [EfficientResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+
+        # Upsampling layers
+        for i in range(n_downsampling):
+            mult = 2**(n_downsampling - i)
+
+            # Option 1
+            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                         kernel_size=3, stride=2,
+                                         padding=1, output_padding=1,
+                                         bias=use_bias),
+                      norm_layer(int(ngf * mult / 2)),
+                      nn.ReLU(True)]
+            
+            # Option 2
+            # model += [nn.Upsample(scale_factor=2, mode='nearest'),
+            #         nn.ReflectionPad2d(1),
+            #         nn.Conv2d(ngf * mult, int(ngf * mult / 2),
+            #                     kernel_size=3, stride=1, padding=0, bias=use_bias),
+            #         norm_layer(int(ngf * mult / 2)),
+            #         nn.ReLU(True)]
+
+        # Output layer
+        model += [nn.ReflectionPad2d(3)]
+        model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        model += [nn.Tanh()]
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, input):
+        """Standard forward"""
+        return self.model(input)
+
 
 class UnetGenerator(nn.Module):
     """Create a Unet-based generator"""

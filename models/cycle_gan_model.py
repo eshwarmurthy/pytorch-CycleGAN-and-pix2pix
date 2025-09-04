@@ -142,7 +142,7 @@ class HueLoss(nn.Module):
 
 class CycleGANModel(BaseModel):
     """
-    This class implements the CycleGAN model with Content Loss and Hue Loss, 
+    This class implements the CycleGAN model with Content Loss, Hue Loss, and L1 Loss, 
     for learning image-to-image translation without paired data.
 
     The model training requires '--dataset_mode unaligned' dataset.
@@ -164,7 +164,7 @@ class CycleGANModel(BaseModel):
         Returns:
             the modified parser.
 
-        For CycleGAN, in addition to GAN losses, we introduce lambda_A, lambda_B, lambda_identity, lambda_content, and lambda_hue for the following losses.
+        For CycleGAN, in addition to GAN losses, we introduce lambda_A, lambda_B, lambda_identity, lambda_content, lambda_hue, and lambda_L1 for the following losses.
         A (source domain), B (target domain).
         Generators: G_A: A -> B; G_B: B -> A.
         Discriminators: D_A: G_A(A) vs. B; D_B: G_B(B) vs. A.
@@ -173,6 +173,7 @@ class CycleGANModel(BaseModel):
         Identity loss (optional): lambda_identity * (||G_A(B) - B|| * lambda_B + ||G_B(A) - A|| * lambda_A) (Sec 5.2 "Photo generation from paintings" in the paper)
         Content loss: lambda_content * (||VGG(G_A(A)) - VGG(B)|| + ||VGG(G_B(B)) - VGG(A)||)
         Hue loss: lambda_hue * (||H(G_A(A)) - H(A)|| + ||H(G_B(B)) - H(B)||) where H extracts hue channel
+        L1 loss: lambda_L1 * (||G_A(A) - B|| + ||G_B(B) - A||) for pixel-level similarity
         Dropout is not used in the original CycleGAN paper.
         """
         parser.set_defaults(no_dropout=True)  # default CycleGAN did not use dropout
@@ -188,7 +189,7 @@ class CycleGANModel(BaseModel):
             parser.add_argument(
                 "--lambda_content",
                 type=float,
-                default=0.5,
+                default=3,
                 help="weight for content loss using VGG features. This helps preserve semantic content during translation.",
             )
             parser.add_argument(
@@ -196,6 +197,12 @@ class CycleGANModel(BaseModel):
                 type=float,
                 default=0.5,
                 help="weight for hue preservation loss. This helps maintain color hue consistency during translation.",
+            )
+            parser.add_argument(
+                "--lambda_L1",
+                type=float,
+                default=5,
+                help="weight for L1 pixel-level loss. This enforces pixel-level similarity between generated and target images.",
             )
             parser.add_argument(
                 "--hue_loss_type",
@@ -215,7 +222,7 @@ class CycleGANModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "content_A", "hue_A", "D_B", "G_B", "cycle_B", "idt_B", "content_B", "hue_B"]
+        self.loss_names = ["D_A", "G_A", "cycle_A", "idt_A", "content_A", "hue_A", "L1_A", "D_B", "G_B", "cycle_B", "idt_B", "content_B", "hue_B", "L1_B"]
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_A = ["real_A", "fake_B", "rec_A"]
         visual_names_B = ["real_B", "fake_A", "rec_B"]
@@ -251,6 +258,7 @@ class CycleGANModel(BaseModel):
             self.criterionIdt = torch.nn.L1Loss()
             self.criterionContent = ContentLoss(self.device)  # define content loss using VGG features
             self.criterionHue = HueLoss(getattr(opt, 'hue_loss_type', 'l1'))  # define hue preservation loss
+            self.criterionL1 = torch.nn.L1Loss()  # define L1 pixel-level loss
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -316,6 +324,7 @@ class CycleGANModel(BaseModel):
         lambda_B = self.opt.lambda_B
         lambda_content = self.opt.lambda_content
         lambda_hue = getattr(self.opt, 'lambda_hue', 1.0)
+        lambda_L1 = getattr(self.opt, 'lambda_L1', 10.0)  # Add lambda_L1 with default value
         
         # Identity loss
         if lambda_idt > 0:
@@ -358,10 +367,20 @@ class CycleGANModel(BaseModel):
             self.loss_hue_A = 0
             self.loss_hue_B = 0
         
-        # combined loss and calculate gradients
+        # L1 loss - pixel-level similarity
+        if lambda_L1 > 0:
+            # L1 loss for A->B translation: pixel-level similarity between fake_B and real_B
+            self.loss_L1_A = self.criterionL1(self.fake_B, self.real_B) * lambda_L1
+            # L1 loss for B->A translation: pixel-level similarity between fake_A and real_A
+            self.loss_L1_B = self.criterionL1(self.fake_A, self.real_A) * lambda_L1
+        else:
+            self.loss_L1_A = 0
+            self.loss_L1_B = 0
+        
+        # Combined loss and calculate gradients
         self.loss_G = (self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + 
                       self.loss_idt_A + self.loss_idt_B + self.loss_content_A + self.loss_content_B +
-                      self.loss_hue_A + self.loss_hue_B)
+                      self.loss_hue_A + self.loss_hue_B + self.loss_L1_A + self.loss_L1_B)
         self.loss_G.backward()
 
     def optimize_parameters(self):
