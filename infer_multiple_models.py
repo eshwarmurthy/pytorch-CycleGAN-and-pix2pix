@@ -190,9 +190,9 @@ def reinhard_color_transfer(source, target):
 
 
 def main():
-    clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/clean'
-    test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/sr_1'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v2_to_v9'
+    clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_target_images_full_fov'
+    test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_images'
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v2_to_v9_full_fov'
     model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/*.onnx"))
     
     # Create output directory if it doesn't exist

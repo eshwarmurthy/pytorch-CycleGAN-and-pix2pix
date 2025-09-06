@@ -160,6 +160,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'resnet_efficient':
         net = EfficientResnetGenerator(input_nc, output_nc, ngf=32, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == 'resnet_ultra_efficient':
+        net = UltraEfficientResnetGenerator(input_nc, output_nc, ngf=32, n_blocks=6, use_attention=True)
     else:
         raise NotImplementedError(f"Generator model name [{netG}] is not recognized")
     return net
@@ -712,7 +714,147 @@ class EfficientResnetGenerator(nn.Module):
         """Standard forward"""
         return self.model(input)
 
+class ChannelAttention(nn.Module):
+    def __init__(self, channels, reduction=4):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.ReLU(True),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False),
+            nn.Sigmoid()
+        )
 
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.fc(y)
+        return x * y
+
+class InvertedResidualBlock(nn.Module):
+    def __init__(self, channels, expand_ratio=2, use_attention=True, block_index=0, total_blocks=6):
+        super(InvertedResidualBlock, self).__init__()
+        
+        reduction_factor = 1 - (block_index / total_blocks) * 0.3
+        self.effective_channels = int(channels * reduction_factor)
+        
+        hidden_dim = int(channels * expand_ratio)
+        
+        layers = []
+        
+        # Expand phase
+        if expand_ratio != 1:
+            layers.append(nn.Conv2d(channels, hidden_dim, 1, bias=False))
+            layers.extend([
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(True)
+            ])
+        
+        if block_index % 2 == 0:
+            layers.extend([
+                nn.Conv2d(hidden_dim, hidden_dim, (1, 3), 1, (0, 1), groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim), nn.ReLU6(True),
+                nn.Conv2d(hidden_dim, hidden_dim, (3, 1), 1, (1, 0), groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim), nn.ReLU6(True)
+            ])
+        else:
+            layers.extend([
+                nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1, groups=hidden_dim, bias=False),
+                nn.BatchNorm2d(hidden_dim), nn.ReLU6(True)
+            ])
+        
+        if use_attention:
+            layers.append(ChannelAttention(hidden_dim))
+        
+        layers.append(nn.Conv2d(hidden_dim, self.effective_channels, 1, bias=False))
+        layers.append(nn.BatchNorm2d(self.effective_channels))
+        
+        self.conv = nn.Sequential(*layers)
+        if channels != self.effective_channels:
+            self.skip_conv = nn.Conv2d(channels, self.effective_channels, 1, bias=False)
+        else:
+            self.skip_conv = None
+
+    def forward(self, x):
+        conv_out = self.conv(x)
+        
+        residual = x
+        if self.skip_conv is not None:
+            residual = self.skip_conv(residual)
+        
+        return residual + conv_out
+
+class UltraEfficientResnetGenerator(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=32, n_blocks=6, use_attention=True):
+        super(UltraEfficientResnetGenerator, self).__init__()
+        
+        self.initial = nn.Sequential(
+            nn.Conv2d(input_nc, ngf // 2, 7, 1, 3, bias=False),
+            nn.BatchNorm2d(ngf // 2), nn.ReLU(True),
+            nn.Conv2d(ngf // 2, ngf, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(ngf), nn.ReLU(True)
+        )
+         
+        self.down1 = nn.Sequential(
+            nn.Conv2d(ngf, ngf, 3, 2, 1, groups=ngf, bias=False),
+            nn.Conv2d(ngf, ngf * 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2), nn.ReLU(True)
+        )
+        
+        self.down2 = nn.Sequential(
+            nn.Conv2d(ngf * 2, ngf * 2, 3, 2, 1, groups=ngf * 2, bias=False),
+            nn.Conv2d(ngf * 2, ngf * 4, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4), nn.ReLU(True)
+        )
+        
+        self.res_blocks = nn.ModuleList()
+        current_channels = ngf * 4
+        for i in range(n_blocks):
+            block = InvertedResidualBlock(
+                channels=current_channels,
+                expand_ratio=2 if i < n_blocks // 2 else 1.5,
+                use_attention=use_attention and (i % 2 == 0),
+                block_index=i,
+                total_blocks=n_blocks
+            )
+            self.res_blocks.append(block)
+            current_channels = block.effective_channels
+        
+        self.up1 = nn.Sequential(
+            nn.Conv2d(current_channels + (ngf * 4), ngf * 8, 3, 1, 1, bias=False),
+            nn.PixelShuffle(2),
+            nn.BatchNorm2d(ngf * 2), nn.ReLU(True)
+        )
+        
+        self.up2 = nn.Sequential(
+            nn.Conv2d(ngf * 4, ngf * 4, 3, 1, 1, bias=False),
+            nn.PixelShuffle(2),
+            nn.BatchNorm2d(ngf), nn.ReLU(True)
+        )
+        
+        self.output = nn.Sequential(
+            nn.Conv2d(ngf, ngf // 2, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(ngf // 2), nn.ReLU(True),
+            nn.Conv2d(ngf // 2, output_nc, 7, 1, 3),
+            nn.Tanh()
+        )
+        
+    def forward(self, x):
+        down1_out = self.down1(self.initial(x))
+        down2_out = self.down2(down1_out)
+        
+        res_out = down2_out
+        for block in self.res_blocks:
+            res_out = block(res_out)
+        
+        up1_in = torch.cat([res_out, down2_out], 1)
+        up1_out = self.up1(up1_in)
+        
+        up2_in = torch.cat([up1_out, down1_out], 1)
+        up2_out = self.up2(up2_in)
+        
+        return self.output(up2_out)
+    
+    
 class UnetGenerator(nn.Module):
     """Create a Unet-based generator"""
 
