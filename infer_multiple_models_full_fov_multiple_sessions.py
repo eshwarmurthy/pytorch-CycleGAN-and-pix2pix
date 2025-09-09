@@ -15,7 +15,7 @@ def load_and_preprocess(img_path):
     img = img_rgb.astype(np.float32) / 255.0
     img = (img - 0.5) / 0.5
     chw = np.transpose(img, (2, 0, 1))
-    nchw = np.expand_dims(chw, axis=0).astype(np.float32)
+    nchw = np.expand_dims(chw, axis=0).astype(np.float16)
     return nchw, img_bgr
 
 def postprocess(nchw):
@@ -158,8 +158,8 @@ def create_comparison_image(orig_img, model_outputs, model_names, clean_img=None
 def main():
     clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_target_images_full_fov'
     test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_images'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v2_to_v9_full_fov_mem_fixed'
-    model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/*.onnx"))
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v7_to_v12_full_fov_mem_fixed'
+    model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/fp16_models/*.onnx"))
     
     os.makedirs(out_dir, exist_ok=True)
     

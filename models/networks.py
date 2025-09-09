@@ -161,7 +161,7 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     elif netG == 'resnet_efficient':
         net = EfficientResnetGenerator(input_nc, output_nc, ngf=32, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == 'resnet_ultra_efficient':
-        net = UltraEfficientResnetGenerator(input_nc, output_nc, ngf=32, n_blocks=6, use_attention=True)
+        net = UltraEfficientResnetGenerator(input_nc, output_nc,ngf=ngf, n_blocks=3, use_attention=True)
     else:
         raise NotImplementedError(f"Generator model name [{netG}] is not recognized")
     return net
