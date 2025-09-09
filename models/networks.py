@@ -160,8 +160,10 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'resnet_efficient':
         net = EfficientResnetGenerator(input_nc, output_nc, ngf=32, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
-    elif netG == 'resnet_ultra_efficient':
+    elif netG == 'resnet_ultra_efficient': # this is for v9 and v11 
         net = UltraEfficientResnetGenerator(input_nc, output_nc,ngf=ngf, n_blocks=3, use_attention=True)
+    elif netG == 'resnet_ultra_efficient_v2': # this is for v10 and others ( for skip connection) 
+        net = UltraEfficientResnetGenerator_v2(input_nc, output_nc,ngf=ngf, n_blocks=3, use_attention=False)
     else:
         raise NotImplementedError(f"Generator model name [{netG}] is not recognized")
     return net
@@ -729,7 +731,26 @@ class ChannelAttention(nn.Module):
         y = self.avg_pool(x)
         y = self.fc(y)
         return x * y
+    
+    
+""" This CHANNEL ATTENTION IS FOR V10 """
+# class ChannelAttention(nn.Module):
+#     def __init__(self, in_planes, ratio=16):
+#         super(ChannelAttention, self).__init__()
+#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
+#         self.max_pool = nn.AdaptiveMaxPool2d(1)
+#         self.fc = nn.Sequential(nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False),
+#                                 nn.ReLU(),
+#                                 nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False))
+#         self.sigmoid = nn.Sigmoid()
 
+#     def forward(self, x):
+#         avg_out = self.fc(self.avg_pool(x))
+#         max_out = self.fc(self.max_pool(x))
+#         out = avg_out + max_out
+#         return x * self.sigmoid(out)
+    
+    
 class InvertedResidualBlock(nn.Module):
     def __init__(self, channels, expand_ratio=2, use_attention=True, block_index=0, total_blocks=6):
         super(InvertedResidualBlock, self).__init__()
@@ -782,7 +803,86 @@ class InvertedResidualBlock(nn.Module):
             residual = self.skip_conv(residual)
         
         return residual + conv_out
+    
+class UltraEfficientResnetGenerator_v2(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=32, n_blocks=6, use_attention=True):
+        super(UltraEfficientResnetGenerator_v2, self).__init__()
+        
+        # --- Encoder ---
+        self.initial = nn.Sequential(
+            nn.Conv2d(input_nc, ngf, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True)
+        )
+        self.down1 = nn.Sequential(
+            nn.Conv2d(ngf, ngf, 3, 2, 1, groups=ngf, bias=False),
+            nn.Conv2d(ngf, ngf * 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2), nn.ReLU(True)
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(ngf * 2, ngf * 2, 3, 2, 1, groups=ngf * 2, bias=False),
+            nn.Conv2d(ngf * 2, ngf * 4, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4), nn.ReLU(True)
+        )
+        
+        # --- Bottleneck ---
+        self.res_blocks = nn.ModuleList()
+        current_channels = ngf * 4
+        for i in range(n_blocks):
+            block = InvertedResidualBlock(
+                channels=current_channels,
+                expand_ratio=2 if i < n_blocks // 2 else 1.5,
+                use_attention=use_attention and (i % 2 == 0),
+                block_index=i,
+                total_blocks=n_blocks
+            )
+            self.res_blocks.append(block)
+            # CRITICAL FIX: Update current_channels for the next block
+            current_channels = block.effective_channels
 
+        # --- Decoder ---
+        # The 'current_channels' now holds the final output channels from the bottleneck
+        self.up1 = nn.Sequential(
+            nn.Conv2d(current_channels + (ngf * 4), ngf * 4, 3, 1, 1, bias=False),
+            nn.PixelShuffle(2),
+            nn.BatchNorm2d(ngf), nn.ReLU(True)
+        )
+        self.up2 = nn.Sequential(
+            nn.Conv2d(ngf + (ngf * 2), ngf * 2, 3, 1, 1, bias=False),
+            nn.PixelShuffle(2),
+            nn.BatchNorm2d(ngf // 2), nn.ReLU(True)
+        )
+        self.output = nn.Sequential(
+            nn.Conv2d(ngf + (ngf // 2), ngf // 2, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(ngf // 2),
+            nn.ReLU(True),
+            nn.Conv2d(ngf // 2, output_nc, 3, 1, 1),
+            nn.Tanh()
+        )
+        
+    def forward(self, x):
+        # --- Encoder Path ---
+        initial_out = self.initial(x)
+        down1_out = self.down1(initial_out)
+        down2_out = self.down2(down1_out)
+        
+        # --- Bottleneck Path ---
+        res_out = down2_out
+        for block in self.res_blocks:
+            res_out = block(res_out)
+        
+        # --- Decoder Path with Skip Connections ---
+        up1_in = torch.cat([res_out, down2_out], 1) 
+        up1_out = self.up1(up1_in)
+        
+        up2_in = torch.cat([up1_out, down1_out], 1)
+        up2_out = self.up2(up2_in)
+        
+        output_in = torch.cat([up2_out, initial_out], 1)
+        
+        return self.output(output_in)
+    
+    
 class UltraEfficientResnetGenerator(nn.Module):
     def __init__(self, input_nc, output_nc, ngf=32, n_blocks=6, use_attention=True):
         super(UltraEfficientResnetGenerator, self).__init__()
