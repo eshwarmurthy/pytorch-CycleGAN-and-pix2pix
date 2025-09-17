@@ -158,8 +158,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
-    elif netG == 'resnet_efficient':
-        net = EfficientResnetGenerator(input_nc, output_nc, ngf=32, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
+    elif netG == 'resnet_efficient': # this is for v7 (n_blocks=6) and v12 (n_blocks=3)
+        net = EfficientResnetGenerator(input_nc, output_nc, ngf=ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=3)
     elif netG == 'resnet_ultra_efficient': # this is for v9 and v11 
         net = UltraEfficientResnetGenerator(input_nc, output_nc,ngf=ngf, n_blocks=3, use_attention=True)
     elif netG == 'resnet_ultra_efficient_v2': # this is for v10 and others ( for skip connection) 

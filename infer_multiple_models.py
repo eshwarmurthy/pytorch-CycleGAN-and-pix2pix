@@ -126,8 +126,8 @@ def create_comparison_image(orig_img, model_outputs, model_names, clean_img=None
         images_to_stack.append(add_text_label(clean_resized, "Ground Truth"))
     
     # Stack horizontally
-    comparison_6 = np.hstack(images_to_stack[:5])
-    comparison_12 = np.hstack(images_to_stack[5:])
+    comparison_6 = np.hstack(images_to_stack[:4])
+    comparison_12 = np.hstack(images_to_stack[4:])
     comparison = np.vstack((comparison_6, comparison_12))
     return comparison
 
@@ -192,7 +192,7 @@ def reinhard_color_transfer(source, target):
 def main():
     clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/clean'
     test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/sr_1'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_fp16_models_v7_to_v12_patches'
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_fp16_models_v7_to_v12_patches_new_new_new'
     model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/fp16_models/*.onnx"))
     
     # Create output directory if it doesn't exist
@@ -244,7 +244,7 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        cv2.destroyAllWindows()
+        pass
 
 
 if __name__ == "__main__":
