@@ -34,6 +34,7 @@ def add_text_label(img, text, position=(10, 30)):
     return img_labeled
 
 def reinhard_color_transfer(source, target):
+    return source
     """Performs Reinhard color transfer from a source image to a target image."""
     # This function is correct and remains unchanged.
     source_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype("float32")
@@ -158,7 +159,7 @@ def create_comparison_image(orig_img, model_outputs, model_names, clean_img=None
 def main():
     clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_target_images_full_fov'
     test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/all_images'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v7_to_v12_full_fov_mem_fixed'
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_models_v7_to_v13_full_fov'
     model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/fp16_models/*.onnx"))
     
     os.makedirs(out_dir, exist_ok=True)

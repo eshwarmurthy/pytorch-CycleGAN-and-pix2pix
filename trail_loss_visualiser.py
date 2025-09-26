@@ -10,8 +10,8 @@ def parse_training_log(log_file_path):
     data = []
     
     # Regex pattern to match the log format
-    pattern = r'\[Rank \d+\] \(epoch: (\d+), iters: (\d+), time: ([\d.]+), data: ([\d.]+)\) , D_A: ([\d.]+), G_A: ([\d.]+), cycle_A: ([\d.]+), idt_A: ([\d.]+), content_A: ([\d.]+), hue_A: ([\d.]+), D_B: ([\d.]+), G_B: ([\d.]+), cycle_B: ([\d.]+), idt_B: ([\d.]+), content_B: ([\d.]+), hue_B: ([\d.]+)'
-    
+    pattern = r'\[Rank \d+\] \(epoch: (\d+), iters: (\d+), time: ([\d.]+), data: ([\d.]+)\) , D_A: ([\d.]+), G_A: ([\d.]+), cycle_A: ([\d.]+), idt_A: ([\d.]+), content_A: ([\d.]+), hue_A: ([\d.]+), L1_A: ([\d.]+), D_B: ([\d.]+), G_B: ([\d.]+), cycle_B: ([\d.]+), idt_B: ([\d.]+), content_B: ([\d.]+), hue_B: ([\d.]+), L1_B: ([\d.]+)'
+    # [Rank 0] (epoch: 1, iters: 88800, time: 0.035, data: 0.004) ,                             D_A: 0.104, G_A: 0.427, cycle_A: 0.488, idt_A: 0.227, content_A: 2.075, hue_A: 0.020, L1_A: 0.263, D_B: 0.157, G_B: 0.422, cycle_B: 0.461, idt_B: 0.212, content_B: 2.182, hue_B: 0.018, L1_B: 0.232
     with open(log_file_path, 'r') as file:
         for line_num, line in enumerate(file, 1):
             line = line.strip()
@@ -20,7 +20,7 @@ def parse_training_log(log_file_path):
                 
             match = re.match(pattern, line)
             if match:
-                epoch, iters, time, data_time, D_A, G_A, cycle_A, idt_A, content_A, hue_A, D_B, G_B, cycle_B, idt_B, content_B, hue_B = match.groups()
+                epoch, iters, time, data_time, D_A, G_A, cycle_A, idt_A, content_A, hue_A,L1_A, D_B, G_B, cycle_B, idt_B, content_B, hue_B,L1_B = match.groups()
                 
                 data.append({
                     'epoch': int(epoch),
@@ -569,7 +569,7 @@ def main():
     """
     Main function to process training log and generate visualization
     """
-    log_file = "/home/as76usr/sigtuple/Eshwar/Garuda-model-dev/AS76/ISP/Defocus-Deblur/pytorch-CycleGAN-and-pix2pix/checkpoints/res_mobile_hybrid/loss_log.txt"
+    log_file = "/home/as76usr/sigtuple/Eshwar/Garuda-model-dev/AS76/ISP/Defocus-Deblur/pytorch-CycleGAN-and-pix2pix/checkpoints/resnet_ultra_efficient_v_12/loss_log.txt"
     
     # Check if file exists
     if not os.path.exists(log_file):
