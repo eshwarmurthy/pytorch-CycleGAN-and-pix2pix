@@ -132,6 +132,7 @@ def create_comparison_image(orig_img, model_outputs, model_names, clean_img=None
     return comparison
 
 def reinhard_color_transfer(source, target):
+    return source
     """
     Performs Reinhard color transfer from a source image to a target image.
 
@@ -192,7 +193,7 @@ def reinhard_color_transfer(source, target):
 def main():
     clean_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/clean'
     test_img_dir = '/imgarc/nila/data/Super_Res/all_data/full_fov_and_wbc_patch_iter_3/organised_data/valid/sr_1'
-    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_fp16_models_v7_to_v13_patches'
+    out_dir = '/imgarc/nila/data/Deblur_Defocus/inference_all_fp16_models_v10_to_v14_patches'
     model_paths = sorted(glob("/imgarc/nila/data/Deblur_Defocus/Models/fp16_models/*.onnx"))
     
     # Create output directory if it doesn't exist
